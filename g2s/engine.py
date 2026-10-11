@@ -61,7 +61,7 @@ class Config:
     accel_factor: float = 0.1                  # client side timers run 10x faster
     no_accel_hosts: list = field(default_factory=lambda: [
         "get2short.com", "liteshort.com", "nowshort.com", "linksflys.com",
-        "vplink.in", "arolinks.com", "babylinks.in", "alpha-links.in"
+        "vplink.in", "arolinks.com", "babylinks.in", "alpha-links.in", "urllinkshort.in"
     ])
     timeout: int = 300
     stuck_seconds: int = 100                   # give up if one page doesn't progress
@@ -145,6 +145,7 @@ class Job:
         self.base = base_domain(host_of(url))
         self.log_cb = log
         self.result = loop.create_future()
+        self.t0 = time.monotonic()
         self.method = None
         self.reached_final = False
         self.chain_hosts = {host_of(url)}
@@ -443,6 +444,11 @@ class Bypasser:
             page = await self.ctx.new_page()
         self.current_page = page
         self.busy = True
+        if job.base == "arolinks.com":
+            try:
+                await self.ctx.clear_cookies(domain=re.compile(r"(^|\.)(arolinks\.com|techmint\.in|bcsakhi\.in)$"))
+            except Exception:
+                pass
         await self._attach(job, page)
         job.log(f"Opening {url}")
         try:
@@ -722,6 +728,19 @@ class Bypasser:
                     pass
                 return page
 
+        # --- transient proxy / network error page recovery ---------------------
+        if url.startswith("chrome-error://") or host == "chromewebdata":
+            if now - job.reload_at > 4:
+                job.reload_at = now
+                retry_url = next((u for u in reversed(job.steps) if u.startswith("http")), job.start_url)
+                job.log(f"Network error page — retrying {short(retry_url, 60)}")
+                try:
+                    await asyncio.sleep(1.5)
+                    await page.goto(retry_url, wait_until="commit")
+                except Exception:
+                    pass
+            return page
+
         # --- new page -----------------------------------------------------------
         if url != job.cur_url:
             job.cur_url, job.url_since = url, now
@@ -803,9 +822,20 @@ class Bypasser:
                     pass
                 return page
 
+        # --- shortcut: final ?wp= or final subdomain link already present in the page source --------
+        if snap.get("wpLinks") and not job.reached_final:
+            target = snap["wpLinks"][0]
+            job.log("⚡ Final link found in page source — skipping remaining steps")
+            try:
+                await page.goto(target, wait_until="commit", referer=url)
+            except Exception:
+                pass
+            return page
+
         # --- WP safelink form: server only checks the timer token -> wait & submit ------
         forms = snap.get("safeForms") or []
-        if forms and not job.reached_final:
+        total_forms = sum(c for c, _ in job.form_submits.values())
+        if forms and not job.reached_final and total_forms < 6:
             f = forms[0]
             ready = decode_timer_token(f.get("token"))
             key = (url, f["id"])
@@ -832,16 +862,6 @@ class Bypasser:
             elif cnt < 3:
                 await asyncio.sleep(0.5)
                 return page
-
-        # --- shortcut: final ?wp= link already present in the page source --------
-        if snap.get("wpLinks") and not job.reached_final:
-            target = snap["wpLinks"][0]
-            job.log("⚡ Final link found in page source — skipping remaining steps")
-            try:
-                await page.goto(target, wait_until="commit", referer=url)
-            except Exception:
-                pass
-            return page
 
         # --- turnstile widgets -----------------------------------------------------
         ts = snap.get("turnstile") or {}
@@ -903,6 +923,18 @@ class Bypasser:
             cnt, last = job.clicks.get(k, (0, 0.0))
             if now - last < 4 or cnt >= 8:
                 continue
+            cand_href = (cand.get("href") or "").lower()
+            if job.base == "arolinks.com" and "bcsakhi." in host and (
+                "readmore" in cand_href or "learn_more" in cand_href or "continue" in cand["text"].lower()
+            ):
+                elapsed = time.monotonic() - job.t0
+                if elapsed < 102.0:
+                    wait_left = 102.0 - elapsed
+                    job.log(f"Waiting {wait_left:.0f}s on {host} for arolinks server-side timer (102s required)…")
+                    while time.monotonic() - job.t0 < 102.0:
+                        job.url_since = time.monotonic()
+                        await asyncio.sleep(min(2.0, 102.0 - (time.monotonic() - job.t0)))
+                    now = time.monotonic()
             job.clicks[k] = (cnt + 1, now)
             job.log(f"Click “{cand['text']}”")
             await self._click(job, page, cand["id"])
@@ -940,7 +972,7 @@ class Bypasser:
 
     async def _click(self, job, page, gid):
         try:
-            direct = await self._eval(page, """(gid) => {
+            direct = await self._eval(page, r"""(gid) => {
               const el = document.querySelector('[data-g2s-id="' + gid + '"]');
               if (!el) return null;
               if (el.id === 'startCountdownBtn') {
@@ -951,16 +983,36 @@ class Bypasser:
               if (!a || !a.href || a.href.startsWith('javascript:')) return null;
               const oc = a.getAttribute('onclick') || '';
               if (/specialActionHandler/i.test(oc)) {
-                el.click();
-                return 'special';
+                let target = null;
+                const origOpen = window.open;
+                window.open = function(u) { target = u; return window; };
+                try {
+                  if (typeof window.specialActionHandler === 'function') {
+                    window.specialActionHandler({ preventDefault() {} });
+                  } else {
+                    el.click();
+                  }
+                } catch (e) {}
+                window.open = origOpen;
+                const navUrl = target || window.location.href;
+                setTimeout(() => { window.location.href = navUrl; }, 50);
+                return 'nav:' + navUrl;
+              }
+              if (a.id === 'cross-snp2' || /\/readmore/i.test(a.href)) {
+                document.cookie = '_uocat=value; path=/; max-age=86400';
+                try { el.click(); } catch (e) {}
+                window.location.href = a.href;
+                return 'nav:' + a.href;
               }
               if (/learn_more\\.php/i.test(a.href)) {
                 window.location.href = a.href;
-                return a.href;
+                return 'nav:' + a.href;
               }
               return null;
             }""", gid)
             if direct:
+                if str(direct).startswith("nav:"):
+                    await asyncio.sleep(2.0)
                 return
         except Exception:
             pass
