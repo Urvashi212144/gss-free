@@ -13,7 +13,8 @@
     "vplink.in",
     "arolinks.com",
     "babylinks.in",
-    "alpha-links.in"
+    "alpha-links.in",
+    "urllinkshort.in"
   ],
   "timeout": 300,
   "stuck_seconds": 100,
@@ -26,5 +27,5 @@
   "host": "0.0.0.0",
   "port": 8080,
   "cache_hours": 24,
-  "proxy": null
+  "proxy": "http://g2s:e8241359f3@xgjxb-117-235-174-54.run.pinggy-free.link:45007"
 }
