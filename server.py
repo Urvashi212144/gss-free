@@ -202,18 +202,21 @@ async def job_events(req):
                                        "Cache-Control": "no-cache"})
     await resp.prepare(req)
     sent = 0
-    while True:
-        job["event"].clear()
-        while sent < len(job["log"]):
-            await resp.write(f"data: {json.dumps({'log': job['log'][sent]})}\n\n".encode())
-            sent += 1
-        if job["status"] == "done":
-            await resp.write(f"data: {json.dumps({'done': public(job)})}\n\n".encode())
-            break
-        try:
-            await asyncio.wait_for(job["event"].wait(), 15)
-        except asyncio.TimeoutError:
-            await resp.write(b": ping\n\n")
+    try:
+        while True:
+            job["event"].clear()
+            while sent < len(job["log"]):
+                await resp.write(f"data: {json.dumps({'log': job['log'][sent]})}\n\n".encode())
+                sent += 1
+            if job["status"] == "done":
+                await resp.write(f"data: {json.dumps({'done': public(job)})}\n\n".encode())
+                break
+            try:
+                await asyncio.wait_for(job["event"].wait(), 15)
+            except asyncio.TimeoutError:
+                await resp.write(b": ping\n\n")
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.ClientConnectionError):
+        pass
     return resp
 
 
