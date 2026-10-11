@@ -20,7 +20,7 @@ Yeh project **Railway.com** pe deploy ke liye ready hai.
 | `G2S_PROXY` | `http://user:pass@host:port` | **Haan** (residential) |
 | `G2S_SOLVER_URL` | `http://hayabusa.proxy.rlwy.net:46794` | Haan (apna solver) |
 | `G2S_SOLVER_API_KEY` | (agar solver pe key lagi ho) | Optional |
-| `G2S_HEADLESS` | `1` | Recommended |
+| `G2S_HEADLESS` | `0` | Recommended (uses built-in Xvfb virtual display) |
 | `G2S_BROWSER_CHANNEL` | (khali chhodo) | Recommended |
 | `G2S_NO_OPEN` | `1` | Auto on Railway |
 | `PORT` | Railway khud set karta hai | Auto |

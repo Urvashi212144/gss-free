@@ -2,11 +2,18 @@
   "solver_url": "https://cf.vltcx.eu.cc",
   "solver_api_key": null,
   "browser_channel": null,
-  "headless": true,
+  "headless": false,
   "show_browser": false,
   "accel_factor": 0.1,
   "no_accel_hosts": [
-    "get2short.com"
+    "get2short.com",
+    "liteshort.com",
+    "nowshort.com",
+    "linksflys.com",
+    "vplink.in",
+    "arolinks.com",
+    "babylinks.in",
+    "alpha-links.in"
   ],
   "timeout": 300,
   "stuck_seconds": 100,

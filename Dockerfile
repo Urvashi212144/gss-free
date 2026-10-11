@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxss1 \
         libxtst6 \
         xdg-utils \
+        xvfb \
+        xauth \
         wget \
         curl \
     && rm -rf /var/lib/apt/lists/*
@@ -56,7 +58,7 @@ RUN mkdir -p /app/profile /app/debug /tmp/g2s-profile \
 # Railway injects $PORT; default 8080 for local docker runs
 ENV PORT=8080 \
     HOST=0.0.0.0 \
-    G2S_HEADLESS=1 \
+    G2S_HEADLESS=0 \
     G2S_BROWSER_CHANNEL= \
     G2S_PROFILE_DIR=/tmp/g2s-profile \
     G2S_NO_OPEN=1

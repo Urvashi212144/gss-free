@@ -99,7 +99,12 @@ if os.environ.get("PORT"):
 else:
     PORT = int(RAW.get("port", 8765))
 CACHE_HOURS = float(os.environ.get("G2S_CACHE_HOURS", RAW.get("cache_hours", 24)))
-NO_OPEN = _env_bool("G2S_NO_OPEN", False) or ("--no-open" in sys.argv) or bool(os.environ.get("RAILWAY_ENVIRONMENT"))
+NO_OPEN = (
+    _env_bool("G2S_NO_OPEN", False)
+    or ("--no-open" in sys.argv)
+    or bool(os.environ.get("RAILWAY_ENVIRONMENT"))
+    or (os.name != "nt" and not cfg.show_browser)
+)
 
 bypasser = Bypasser(cfg)
 jobs: dict[str, dict] = {}
@@ -277,6 +282,7 @@ async def post_settings(req):
 
 async def proxy_test(_):
     import aiohttp
+    import base64
     from g2s.engine import parse_proxy
     px = cfg.proxy
     try:
@@ -285,7 +291,8 @@ async def proxy_test(_):
             d = parse_proxy(px)
             kw["proxy"] = d["server"]
             if d.get("username"):
-                kw["proxy_auth"] = aiohttp.BasicAuth(d["username"], d.get("password", ""))
+                token = base64.b64encode(f"{d['username']}:{d.get('password', '')}".encode()).decode()
+                kw["proxy_headers"] = {"Proxy-Authorization": f"Basic {token}"}
         async with aiohttp.ClientSession() as s:
             async with s.get("https://ipinfo.io/json", timeout=aiohttp.ClientTimeout(total=20), **kw) as r:
                 info = await r.json(content_type=None)
@@ -312,11 +319,12 @@ async def screenshot(_):
 
 
 async def on_startup(app):
+    bypasser._ensure_display()
     print(f"Starting browser (headless={cfg.headless}, channel={cfg.browser_channel!r})…", flush=True)
     if cfg.proxy:
         print(f"Proxy configured: {mask_proxy(cfg.proxy)}", flush=True)
     else:
-        print("WARNING: No residential proxy set. Datacenter IPs are usually blocked by get2short.", flush=True)
+        print("Proxy: none configured at startup (can be set via G2S_PROXY or Web UI).", flush=True)
     await bypasser.start()
     url = f"http://{HOST}:{PORT}/"
     print(f"\n  Direct-link generator ready → {url}\n", flush=True)
