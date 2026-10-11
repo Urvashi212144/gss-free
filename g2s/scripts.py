@@ -189,17 +189,24 @@ SCAN_JS = r"""
       window.__g2sAway(true);
     }
   } catch (e) {}
+  try {
+    if (document.getElementById('startCountdownBtn') || /(^|;\s*)uopusi=/.test(document.cookie)) {
+      sessionStorage.setItem('__g2sPlugin', 'uopusi');
+    } else if (document.getElementById('VerifyBtn') || /(^|;\s*)user_in=/.test(document.cookie)) {
+      sessionStorage.setItem('__g2sPlugin', 'user_in');
+    }
+  } catch (e) {}
   const txt = (el) => ((el.innerText || el.value || el.getAttribute('aria-label') || el.title || '') + '')
                         .replace(/\s+/g, ' ').trim();
   const bodyText = document.body ? (document.body.innerText || '') : '';
   out.text = bodyText.slice(0, 4000);
   out.challenge = !!window._cf_chl_opt || /^(just a moment|attention required|one more step)/i.test(out.title);
 
-  // -- direct links to the shortener's final page (?wp=token or link.<base>/<alias>)
+  // -- direct links to the shortener's final page (?wp=token or <sub.><base>/<alias>)
   const html = document.documentElement ? document.documentElement.outerHTML : '';
   const esc = arg.base.replace(/\./g, '\\.');
   const re = new RegExp('https?:(?:\\\\?/){2}(?:[\\w-]+\\.)*' + esc + '(?::\\d+)?(?:\\\\?/)[^\\s"\'<>]*?[?&]wp=[A-Za-z0-9%=_\\-]+', 'g');
-  const linkRe = new RegExp('^https?://(?:link|open)\\.' + esc + '/[A-Za-z0-9_-]{3,}$', 'i');
+  const linkRe = new RegExp('^https?://(?:[\\w-]+\\.)*' + esc + '/[A-Za-z0-9_-]{3,}(?:\\?[^\\s"\'<>]*)?$', 'i');
   const found = new Set();
   (html.match(re) || []).forEach(u => found.add(u.replace(/\\\//g, '/').replace(/&amp;/g, '&')));
   document.querySelectorAll('a[href], form[action]').forEach(el => {
@@ -260,8 +267,17 @@ SCAN_JS = r"""
   const cands = [];
   let id = 0;
   const timerBoxVis = vis(document.getElementById('timerBox'));
+  const waitBoxVis = vis(document.getElementById('WaitBox'));
+  const step1Btn = document.getElementById('startCountdownBtn') || document.getElementById('VerifyBtn');
+  const pluginType = (() => { try { return sessionStorage.getItem('__g2sPlugin'); } catch (e) { return null; } })();
   document.querySelectorAll('button, a, input[type=submit], input[type=button], [role=button], [onclick]').forEach(el => {
-    if (el.id === 'tp-snp2' && timerBoxVis) return;
+    const inTp2 = el.id === 'tp-snp2' || !!el.closest('#tp-snp2');
+    const inCross2 = el.id === 'cross-snp2' || !!el.closest('#cross-snp2');
+    if (step1Btn && (inTp2 || inCross2)) return;
+    if (pluginType === 'uopusi' && inTp2) return;
+    if (pluginType === 'user_in' && inCross2) return;
+    if (inTp2 && timerBoxVis) return;
+    if (inCross2 && waitBoxVis) return;
     const t = txt(el);
     if (!t || t.length > 60) return;
     const cleanT = t.replace(/^[^\w]+|[^\w]+$/g, '').trim();
@@ -281,7 +297,9 @@ SCAN_JS = r"""
     if (disabled) return;
     const gid = 'c' + (id++);
     el.setAttribute('data-g2s-id', gid);
-    cands.push({ id: gid, text: t, tag: el.tagName, href: el.getAttribute('href') || '', score });
+    const parentA = el.closest('a[href]');
+    const href = el.getAttribute('href') || (parentA ? parentA.href : '') || '';
+    cands.push({ id: gid, text: t, tag: el.tagName, href, score });
   });
   cands.sort((a, b) => b.score - a.score);
   out.candidates = cands.slice(0, 8);
@@ -367,6 +385,12 @@ JS_CLICK = r"""
       window.location.href = parentA.href;
       return true;
     }
+    if (parentA.id === 'cross-snp2' || /\/readmore/i.test(parentA.href)) {
+      document.cookie = '_uocat=value; path=/; max-age=86400';
+      el.click();
+      window.location.href = parentA.href;
+      return true;
+    }
     el.click();
     window.location.href = parentA.href;
     return true;
@@ -378,10 +402,19 @@ JS_CLICK = r"""
 
 SUBMIT_GO_FORM_JS = r"""
 () => {
+  const gl = document.querySelector('a.get-link');
+  if (gl && gl.href && !gl.href.endsWith('#') && !gl.href.startsWith('javascript:')) {
+    gl.click();
+    return true;
+  }
   const f = document.querySelector('form[action*="/links/go"], #go-link');
   if (!f) return false;
-  try { if (window.jQuery) { window.jQuery(f).submit(); return true; } } catch (e) {}
-  try { f.requestSubmit ? f.requestSubmit() : f.submit(); return true; } catch (e) {}
+  try {
+    if (window.jQuery) {
+      window.jQuery(f).triggerHandler('submit');
+      return true;
+    }
+  } catch (e) {}
   return false;
 }
 """
