@@ -47,7 +47,7 @@ EXCLUDE = (r"wait|please|\d+\s*s(ec|econds)?\b|verifying|telegram|youtube|instag
            r"learn more|cookie|log ?in|sign ?(in|up)|register|\bhome\b|menu|search|share|comment|"
            r"reply|subscribe|install|\bapp\b|\bapk\b")
 BLOCK_RE = re.compile(r"ip_risk_blocked|vpn detected|turn off your vpn|access temporarily restricted|"
-                      r"browser not supported|network protection", re.I)
+                      r"browser not supported", re.I)
 CF_HOST = "challenges.cloudflare.com"
 
 
@@ -61,7 +61,8 @@ class Config:
     accel_factor: float = 0.1                  # client side timers run 10x faster
     no_accel_hosts: list = field(default_factory=lambda: [
         "get2short.com", "liteshort.com", "nowshort.com", "linksflys.com",
-        "vplink.in", "arolinks.com", "babylinks.in", "alpha-links.in", "urllinkshort.in"
+        "vplink.in", "arolinks.com", "babylinks.in", "alpha-links.in", "urllinkshort.in",
+        "lksfy.com", "softurl.in", "shortwala.com", "earnlinks.in", "inshorturl.in", "inshorturl.com"
     ])
     timeout: int = 300
     stuck_seconds: int = 100                   # give up if one page doesn't progress
@@ -149,6 +150,10 @@ class Job:
         self.method = None
         self.reached_final = False
         self.chain_hosts = {host_of(url)}
+        if self.base == "inshorturl.in":
+            self.chain_hosts.add("inshorturl.com")
+        elif self.base == "inshorturl.com":
+            self.chain_hosts.add("inshorturl.in")
         self.steps = []
         self.cur_url = None
         self.url_since = time.monotonic()
@@ -244,6 +249,7 @@ class Bypasser:
         self.current_page = None
         self.busy = False
         self._xvfb_proc = None
+        self.on_proxy_expired = None
 
     def _ensure_display(self):
         if os.name == "nt":
@@ -412,12 +418,24 @@ class Bypasser:
             try:
                 return await self._attempt(url, log, t0)
             except BypassError as e:
-                if "ERR_PROXY_CONNECTION_FAILED" in str(e) or "ERR_TUNNEL_CONNECTION_FAILED" in str(e):
+                if self.cfg.proxy and any(err in str(e) for err in (
+                    "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED",
+                    "ERR_CONNECTION_RESET", "ERR_EMPTY_RESPONSE", "ERR_CONNECTION_CLOSED"
+                )):
+                    expired_px = self.cfg.proxy
                     log("⚠ Proxy connection failed (tunnel offline/expired) — switching to direct connection…")
                     self.cfg.proxy = None
+                    if self.on_proxy_expired:
+                        try:
+                            res_cb = self.on_proxy_expired(expired_px, str(e))
+                            if asyncio.iscoroutine(res_cb):
+                                asyncio.ensure_future(res_cb)
+                        except Exception:
+                            pass
                     await self._restart(self._accel)
+                    t0 = time.monotonic()
                     return await self._attempt(url, log, t0)
-                if self._accel >= 1 or "blocked" in str(e).lower():
+                if self._accel >= 1 or "blocked" in str(e).lower() or "server redirect loop" in str(e).lower():
                     raise
                 log(f"⚠ {e} — retrying once with real-time timers (no acceleration)…")
                 normal = self._accel
@@ -605,9 +623,11 @@ class Bypasser:
                             job.go_error = "timer not ready"
                             job.go_error_at = time.monotonic()
                             job.log("Final API returned start URL (timer not ready) — waiting to retry")
-                        else:
+                        elif dest_url.lower().startswith(("http://", "https://")):
                             job.reached_final = True
                             job.pending_redirect = dest_url
+                        else:
+                            job.reached_final = True
                     else:
                         job.go_error = data.get("message") or str(data)[:200]
                         job.go_error_at = time.monotonic()
@@ -808,6 +828,14 @@ class Bypasser:
         if re.match(r"(www\.)?google\.[a-z.]+$", host):
             from urllib.parse import parse_qs, unquote
             q = parse_qs(urlparse(url).query)
+            direct_u = (q.get("url") or [""])[0].strip()
+            if direct_u and direct_u.startswith(("http://", "https://")):
+                job.log(f"⚡ Google redirect unwrapped → {short(direct_u)}")
+                try:
+                    await page.goto(direct_u, wait_until="commit", referer="https://www.google.com/")
+                except Exception:
+                    pass
+                return page
             inner = q.get("continue", [""])[0]
             if inner:
                 q = parse_qs(urlparse(unquote(inner)).query)
@@ -818,6 +846,27 @@ class Bypasser:
                 job.log(f"⚡ Google-search step skipped → opening {target} with Google referrer")
                 try:
                     await page.goto(target, wait_until="commit", referer="https://www.google.com/")
+                except Exception:
+                    pass
+                return page
+
+        # --- newwpsafelink (e.g. mtc1.jobsraavi.in / softurl.in) ---------------------
+        nwp = snap.get("newWpSafelink")
+        if nwp and not job.reached_final:
+            target = nwp.get("url")
+            delay = float(nwp.get("delay") or 25) + 1.0
+            if target and target not in job.shortcut_used:
+                elapsed = time.monotonic() - job.t0
+                if elapsed < delay:
+                    wait_left = delay - elapsed
+                    job.log(f"Safelink token found — waiting {wait_left:.0f}s for server timer ({delay:.0f}s required)…")
+                    while time.monotonic() - job.t0 < delay:
+                        job.url_since = time.monotonic()
+                        await asyncio.sleep(min(1.5, delay - (time.monotonic() - job.t0)))
+                job.shortcut_used.add(target)
+                job.log(f"⚡ Jumping to safelink destination → {short(target)}")
+                try:
+                    await page.goto(target, wait_until="commit", referer=url)
                 except Exception:
                     pass
                 return page
@@ -835,8 +884,12 @@ class Bypasser:
         # --- WP safelink form: server only checks the timer token -> wait & submit ------
         forms = snap.get("safeForms") or []
         total_forms = sum(c for c, _ in job.form_submits.values())
-        if forms and not job.reached_final and total_forms < 6:
+        if forms and not job.reached_final and total_forms < 8:
             f = forms[0]
+            if f["id"].endswith("_any1") and any(k[1].endswith("_get") for k in job.form_submits):
+                raise BypassError(
+                    f"{job.base} server redirect loop: redirected back to {host} Step 1 after completing all 4 steps"
+                )
             ready = decode_timer_token(f.get("token"))
             key = (url, f["id"])
             cnt, last = job.form_submits.get(key, (0, 0.0))

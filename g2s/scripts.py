@@ -27,7 +27,7 @@ INIT_SCRIPT = r"""
     };
     const isFinalPage = () => Boolean(
       document.getElementById('go-link') ||
-      document.querySelector('form[action*="/links/go"], a.get-link')
+      document.querySelector('form[action*="/links/go"], a.get-link, #form-show')
     );
     const factor = () => {
       if (noAccelHost || isBaseHost()) return 1;
@@ -215,10 +215,44 @@ SCAN_JS = r"""
     re.lastIndex = 0;
     if (linkRe.test(u) && !location.hostname.endsWith(arg.base)) found.add(u);
   });
+  try {
+    const rtgA = document.querySelector('#rtg-snp21 a[href], a#rtg-snp21[href], a#btn7[href]');
+    if (rtgA && /^https?:\/\//i.test(rtgA.href)) found.add(rtgA.href);
+    const gteA = document.getElementById('gtelinkbtn');
+    if (gteA && /^https?:\/\//i.test(gteA.href || '')) {
+      let gu = gteA.href;
+      if (arg.base === 'inshorturl.in') gu = gu.replace(/^https?:\/\/inshorturl\.com\//i, 'https://inshorturl.in/');
+      found.add(gu);
+    }
+    const tgMatch = html.match(/tagrget_url\s*=\s*["']([A-Za-z0-9+/=_-]+)["']/);
+    if (tgMatch && tgMatch[1]) {
+      document.cookie = 'user_step=1; path=/; max-age=180';
+      let tu = atob(tgMatch[1].trim());
+      const gm = tu.match(/^https?:\/\/(?:www\.)?google\.[a-z.]+\/url\?(?:.*&)?url=([^&]+)/i);
+      if (gm) tu = decodeURIComponent(gm[1]);
+      if (/^https?:\/\//i.test(tu)) found.add(tu);
+    }
+  } catch (e) {}
   out.wpLinks = [...found].filter(u => u.split('#')[0] !== location.href.split('#')[0]);
 
+  // -- newwpsafelink (mtc1.jobsraavi.in / softurl.in) -----------------------
+  out.newWpSafelink = null;
+  try {
+    let nwpData = null;
+    const srMatch = html.match(/safelink_redirect=([A-Za-z0-9+/=%_-]+)/);
+    if (srMatch) {
+      nwpData = JSON.parse(atob(decodeURIComponent(srMatch[1])));
+    } else {
+      const nwpInp = document.querySelector('input[name="newwpsafelink"]');
+      if (nwpInp && nwpInp.value) nwpData = JSON.parse(atob(nwpInp.value.trim()));
+    }
+    if (nwpData && nwpData.safelink && /^https?:\/\//i.test(nwpData.safelink)) {
+      out.newWpSafelink = { url: nwpData.safelink, delay: Number(nwpData.delay) || 25 };
+    }
+  } catch (e) {}
+
   // -- final (AdLinkFly) page markers --------------------------------------
-  out.finalMarkers = !!document.querySelector('form[action*="/links/go"], #go-link, a.get-link');
+  out.finalMarkers = !!document.querySelector('form[action*="/links/go"], #go-link, a.get-link, #form-show');
   const gl = document.querySelector('a.get-link');
   out.getLinkHref = gl ? (gl.getAttribute('href') || '') : '';
   out.getLinkDisabled = gl ? /disabled/.test(gl.className) : true;
@@ -301,7 +335,7 @@ SCAN_JS = r"""
     const href = el.getAttribute('href') || (parentA ? parentA.href : '') || '';
     cands.push({ id: gid, text: t, tag: el.tagName, href, score });
   });
-  cands.sort((a, b) => b.score - a.score);
+  cands.sort((a, b) => (b.score - a.score) || ((b.href ? 1 : 0) - (a.href ? 1 : 0)));
   out.candidates = cands.slice(0, 8);
 
   // -- WP safelink forms (server-side timer token) ----------------------------
@@ -309,10 +343,26 @@ SCAN_JS = r"""
   document.querySelectorAll('form').forEach((f, i) => {
     const ins = [...f.querySelectorAll('input[type=hidden], input:not([type])')];
     const tok = ins.find(x => /timer_token|safelink.*token/i.test(x.name || ''));
-    const sl = ins.find(x => /safelink|wpsafe|newwp/i.test(x.name || ''));
-    if (!tok && !sl) return;
-    f.setAttribute('data-g2s-form', 'f' + i);
-    out.safeForms.push({ id: 'f' + i, action: f.getAttribute('action') || '', method: (f.method || 'get').toLowerCase(),
+    const sl = ins.find(x => (/safelink|wpsafe|newwp/i.test(x.name || '')) &&
+                             !(x.name === 'newwpsafelink' && out.newWpSafelink));
+    const rtg = (f.id === 'rtg' && ins.find(x => x.name === 'folder') &&
+                 !document.querySelector('#rtg-snp21 a[href^="http"], a#rtg-snp21[href^="http"]'));
+    const tpInp = (f.id === 'tpForm') ? ins.find(x => /^(any\d*|get)$/.test(x.name || '')) : null;
+    if (tpInp) {
+      document.cookie = 'page=4; path=/';
+      const pv = f.querySelector('input[name="page_value"]');
+      if (pv && !pv.value) pv.value = '4';
+    }
+    if (!tok && !sl && !rtg && !tpInp) return;
+    let fid = 'f' + i;
+    if (tpInp) {
+      fid += '_' + tpInp.name;
+    } else if (rtg) {
+      const sm = bodyText.match(/Step\s*(\d+)/i);
+      if (sm) fid += '_s' + sm[1];
+    }
+    f.setAttribute('data-g2s-form', fid);
+    out.safeForms.push({ id: fid, action: f.getAttribute('action') || '', method: (f.method || 'get').toLowerCase(),
                          token: tok ? tok.value : null, fields: ins.map(x => x.name).filter(Boolean),
                          hasTs: !!f.querySelector('[name="cf-turnstile-response"]') });
   });
